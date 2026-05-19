@@ -12,18 +12,29 @@ import type {
 } from '../../../../media/types';
 import type { TextTrackSegmentLoaderActor } from '../../../actors/text-track-segment-loader';
 import type { TextTracksActor } from '../../../actors/text-tracks';
-import {
-  loadTextTrackCues,
-  type TextTrackCueLoadingContext,
-  type TextTrackCueLoadingState,
-} from '../../load-text-track-cues';
+import { loadTextTrackSegments } from '../load-segments';
 import { setupTextTrackActors, type TextTrackActorsContext } from '../setup-text-track-actors';
+
+// Local narrow type aliases — the text-specific slice of the
+// `SegmentLoadingState` / `SegmentLoadingContext` shapes that
+// `loadTextTrackSegments` (now defined in `load-segments.ts`) consumes.
+interface TextTrackSegmentLoadingState {
+  selectedTextTrackId?: string;
+  presentation?: MaybeResolvedPresentation;
+  currentTime?: number;
+  preload?: string;
+  loadActivated?: boolean;
+}
+
+interface TextTrackSegmentLoadingContext {
+  textTrackSegmentLoaderActor?: TextTrackSegmentLoaderActor | undefined;
+}
 
 // The composed behaviors (setup in dom + loader in media) intersect their
 // context-shape contracts. The setup narrows `mediaElement` to
 // `HTMLMediaElement`; the loader keeps the abstract actor types. The test
 // signal map has to satisfy both.
-type ComposedContext = TextTrackCueLoadingContext & TextTrackActorsContext;
+type ComposedContext = TextTrackSegmentLoadingContext & TextTrackActorsContext;
 
 // Mock resolveVttSegment
 vi.mock('../../../../media/dom/text/resolve-vtt-segment', () => ({
@@ -36,11 +47,13 @@ vi.mock('../../../../media/dom/text/resolve-vtt-segment', () => ({
   destroyVttResolver: vi.fn(),
 }));
 
-function makeState(initial: TextTrackCueLoadingState = {}): StateSignals<TextTrackCueLoadingState> {
+function makeState(initial: TextTrackSegmentLoadingState = {}): StateSignals<TextTrackSegmentLoadingState> {
   return {
     selectedTextTrackId: signal<string | undefined>(initial.selectedTextTrackId),
     presentation: signal<MaybeResolvedPresentation | undefined>(initial.presentation),
     currentTime: signal<number | undefined>(initial.currentTime),
+    preload: signal<string | undefined>(initial.preload),
+    loadActivated: signal<boolean | undefined>(initial.loadActivated),
   };
 }
 
@@ -52,7 +65,7 @@ function makeContext(initial: ComposedContext = {}): ContextSignals<ComposedCont
     textTracksActor: signal<TextTracksActor<VTTCue & Cue> | undefined>(
       initial.textTracksActor as TextTracksActor<VTTCue & Cue> | undefined
     ) as ContextSignals<ComposedContext>['textTracksActor'],
-    segmentLoaderActor: signal<TextTrackSegmentLoaderActor | undefined>(initial.segmentLoaderActor),
+    textTrackSegmentLoaderActor: signal<TextTrackSegmentLoaderActor | undefined>(initial.textTrackSegmentLoaderActor),
   };
 }
 
@@ -93,11 +106,14 @@ function createMockSegments(count: number): Segment[] {
   }));
 }
 
-function setupLoadTextTrackCues(initialState: TextTrackCueLoadingState, initialContext: ComposedContext) {
-  const state = makeState(initialState);
+function setupLoadTextTrackCues(initialState: TextTrackSegmentLoadingState, initialContext: ComposedContext) {
+  // Default to `preload: 'auto'` so existing tests (which pre-date the
+  // FSM and assume loading-is-on) still exercise the load path. Tests
+  // targeting dormant / activation behavior override this explicitly.
+  const state = makeState({ preload: 'auto', ...initialState });
   const context = makeContext(initialContext);
   const setupCleanup = setupTextTrackActors.setup({ context, config: { resolveTextTrackSegment: resolveVttSegment } });
-  const reactor = loadTextTrackCues.setup({ state, context });
+  const reactor = loadTextTrackSegments.setup({ state, context });
   const cleanup = () => {
     reactor.destroy();
     setupCleanup();
@@ -105,7 +121,7 @@ function setupLoadTextTrackCues(initialState: TextTrackCueLoadingState, initialC
   return { state, context, cleanup };
 }
 
-describe('loadTextTrackCues', () => {
+describe('loadTextTrackSegments', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -448,6 +464,161 @@ describe('loadTextTrackCues', () => {
       expect(resolveVttSegment).toHaveBeenCalledWith('https://example.com/segment-0.vtt');
       expect(resolveVttSegment).toHaveBeenCalledWith('https://example.com/segment-1.vtt');
       expect(resolveVttSegment).toHaveBeenCalledWith('https://example.com/segment-2.vtt');
+
+      cleanup();
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Load-mode FSM: preconditions-unmet | dormant | full-range
+  // --------------------------------------------------------------------------
+
+  describe('load-mode FSM', () => {
+    function makeMountedTrack(id = 'text-1') {
+      const trackElement = document.createElement('track');
+      trackElement.id = id;
+      const video = document.createElement('video');
+      video.appendChild(trackElement);
+      trackElement.track.mode = 'hidden';
+      return video;
+    }
+
+    it("dormant — preload='none' && !loadActivated: no fetches", async () => {
+      const video = makeMountedTrack();
+
+      const { cleanup } = setupLoadTextTrackCues(
+        {
+          selectedTextTrackId: 'text-1',
+          presentation: createMockPresentation([{ id: 'text-1', segments: createMockSegments(2) }]),
+          preload: 'none',
+        },
+        { mediaElement: video }
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { resolveVttSegment } = await import('../../../../media/dom/text/resolve-vtt-segment');
+      expect(resolveVttSegment).not.toHaveBeenCalled();
+
+      cleanup();
+    });
+
+    it("dormant — preload='metadata' && !loadActivated: no fetches (text has no init segment)", async () => {
+      const video = makeMountedTrack();
+
+      const { cleanup } = setupLoadTextTrackCues(
+        {
+          selectedTextTrackId: 'text-1',
+          presentation: createMockPresentation([{ id: 'text-1', segments: createMockSegments(2) }]),
+          preload: 'metadata',
+        },
+        { mediaElement: video }
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { resolveVttSegment } = await import('../../../../media/dom/text/resolve-vtt-segment');
+      expect(resolveVttSegment).not.toHaveBeenCalled();
+
+      cleanup();
+    });
+
+    it("full-range — preload='auto' triggers loading immediately", async () => {
+      const video = makeMountedTrack();
+
+      const { cleanup } = setupLoadTextTrackCues(
+        {
+          selectedTextTrackId: 'text-1',
+          presentation: createMockPresentation([{ id: 'text-1', segments: createMockSegments(2) }]),
+          preload: 'auto',
+        },
+        { mediaElement: video }
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { resolveVttSegment } = await import('../../../../media/dom/text/resolve-vtt-segment');
+      expect(resolveVttSegment).toHaveBeenCalledTimes(2);
+
+      cleanup();
+    });
+
+    it("full-range — loadActivated overrides preload='none'", async () => {
+      const video = makeMountedTrack();
+
+      const { cleanup } = setupLoadTextTrackCues(
+        {
+          selectedTextTrackId: 'text-1',
+          presentation: createMockPresentation([{ id: 'text-1', segments: createMockSegments(2) }]),
+          preload: 'none',
+          loadActivated: true,
+        },
+        { mediaElement: video }
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { resolveVttSegment } = await import('../../../../media/dom/text/resolve-vtt-segment');
+      expect(resolveVttSegment).toHaveBeenCalledTimes(2);
+
+      cleanup();
+    });
+
+    it('transitions dormant → full-range when loadActivated flips true', async () => {
+      const video = makeMountedTrack();
+
+      const { state, cleanup } = setupLoadTextTrackCues(
+        {
+          selectedTextTrackId: 'text-1',
+          presentation: createMockPresentation([{ id: 'text-1', segments: createMockSegments(2) }]),
+          preload: 'none',
+        },
+        { mediaElement: video }
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { resolveVttSegment } = await import('../../../../media/dom/text/resolve-vtt-segment');
+      expect(resolveVttSegment).not.toHaveBeenCalled();
+
+      state.loadActivated.set(true);
+
+      await vi.waitFor(() => {
+        expect(resolveVttSegment).toHaveBeenCalledTimes(2);
+      });
+
+      cleanup();
+    });
+
+    it('does not re-dispatch on currentTime ticks within the same segment', async () => {
+      const video = makeMountedTrack();
+
+      const { state, cleanup } = setupLoadTextTrackCues(
+        {
+          selectedTextTrackId: 'text-1',
+          currentTime: 0,
+          // 5 segments of 10s — initial currentTime=0 → boundary=0
+          presentation: createMockPresentation([{ id: 'text-1', segments: createMockSegments(5) }]),
+        },
+        { mediaElement: video }
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { resolveVttSegment } = await import('../../../../media/dom/text/resolve-vtt-segment');
+      const callsAfterInitial = (resolveVttSegment as ReturnType<typeof vi.fn>).mock.calls.length;
+      expect(callsAfterInitial).toBeGreaterThan(0);
+
+      // Tick currentTime within segment 0 (boundary stays at 0). Loader
+      // should not receive new load messages → no new resolveVttSegment
+      // calls.
+      state.currentTime.set(2);
+      state.currentTime.set(5);
+      state.currentTime.set(8);
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect((resolveVttSegment as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsAfterInitial);
 
       cleanup();
     });

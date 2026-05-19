@@ -1,9 +1,25 @@
 import { createMachineActor, type HandlerContext, type MessageActor } from '../../../core/actors/create-machine-actor';
 import { effect } from '../../../core/signals/effect';
+import { peek } from '../../../core/signals/primitives';
 import { SerialRunner, Task } from '../../../core/tasks/task';
-import { calculateBackBufferFlushPoint } from '../../../media/buffer/back-buffer';
-import { calculateForwardFlushPoint, getSegmentsToLoad } from '../../../media/buffer/forward-buffer';
-import type { AddressableObject, AudioTrack, Segment, VideoTrack } from '../../../media/types';
+import {
+  type BackBufferConfig,
+  calculateBackBufferFlushPoint,
+  DEFAULT_BACK_BUFFER_CONFIG,
+} from '../../../media/buffer/back-buffer';
+import {
+  calculateForwardFlushPoint,
+  DEFAULT_FORWARD_BUFFER_CONFIG,
+  type ForwardBufferConfig,
+  getSegmentsToLoad,
+} from '../../../media/buffer/forward-buffer';
+import {
+  type AddressableObject,
+  type AudioTrack,
+  SEGMENT_TIME_EPSILON,
+  type Segment,
+  type VideoTrack,
+} from '../../../media/types';
 import type { AppendInitMessage, AppendSegmentMessage, RemoveMessage, SourceBufferActor } from './source-buffer';
 
 // ============================================================================
@@ -89,6 +105,16 @@ export interface SegmentLoaderActorContext {
 }
 
 export type SegmentLoaderActor = MessageActor<SegmentLoaderActorState, SegmentLoaderActorContext, SegmentLoaderMessage>;
+
+/**
+ * Configuration for `createSegmentLoaderActor`. Each sub-config is
+ * spread over the corresponding `DEFAULT_*_CONFIG` so callers can
+ * override individual fields.
+ */
+export interface SegmentLoaderActorConfig {
+  forwardBuffer?: Partial<ForwardBufferConfig>;
+  backBuffer?: Partial<BackBufferConfig>;
+}
 
 // ============================================================================
 // HELPERS
@@ -229,17 +255,27 @@ function makeLoadTask(
  */
 export function createSegmentLoaderActor(
   sourceBufferActor: SourceBufferActor,
-  fetchBytes: FetchBytes
+  fetchBytes: FetchBytes,
+  config: SegmentLoaderActorConfig = {}
 ): SegmentLoaderActor {
   type UserState = Exclude<SegmentLoaderActorState, 'destroyed'>;
   type Ctx = HandlerContext<UserState, SegmentLoaderActorContext, () => SerialRunner>;
 
+  const forwardBufferConfig: ForwardBufferConfig = { ...DEFAULT_FORWARD_BUFFER_CONFIG, ...config.forwardBuffer };
+  const backBufferConfig: BackBufferConfig = { ...DEFAULT_BACK_BUFFER_CONFIG, ...config.backBuffer };
+
   const getBufferedSegments = (allSegments: readonly Segment[]): Segment[] => {
     // Exclude partial segments — they are still being streamed and must not be
     // treated as fully buffered for load planning or buffer window calculations.
+    //
+    // `peek` defensively: `load` handlers run synchronously inside `send()`,
+    // which is called from inside the dispatcher reactor's `effects:` body.
+    // A tracked `.snapshot.get()` here would leak the source-buffer-actor's
+    // snapshot into the dispatcher's dep set, causing the dispatcher to re-
+    // fire on every SourceBufferActor state change. Mirrors the fix applied
+    // to the text-track loader in `b3f44efe`.
     const bufferedIds = new Set(
-      sourceBufferActor.snapshot
-        .get()
+      peek(sourceBufferActor.snapshot)
         .context.segments.filter((s) => !s.partial)
         .map((s) => s.id)
     );
@@ -263,18 +299,21 @@ export function createSegmentLoaderActor(
    */
   const planTasks = (message: SegmentLoaderMessage): LoadTask[] => {
     const { track, range } = message;
-    const actorCtx = sourceBufferActor.snapshot.get().context;
+    // `peek` for the same reason as `getBufferedSegments` above — avoid
+    // leaking the SourceBufferActor snapshot into the calling dispatcher's
+    // tracking scope.
+    const actorCtx = peek(sourceBufferActor.snapshot).context;
     const bufferedSegments = getBufferedSegments(track.segments);
     const currentTime = range?.start ?? 0;
     const tasks: LoadTask[] = [];
 
     // Case 1: Removes
     if (range) {
-      const forwardFlushStart = calculateForwardFlushPoint(bufferedSegments, currentTime);
+      const forwardFlushStart = calculateForwardFlushPoint(bufferedSegments, currentTime, forwardBufferConfig);
       if (forwardFlushStart < Infinity) {
         tasks.push({ type: 'remove', start: forwardFlushStart, end: Infinity });
       }
-      const backFlushEnd = calculateBackBufferFlushPoint(bufferedSegments, currentTime);
+      const backFlushEnd = calculateBackBufferFlushPoint(bufferedSegments, currentTime, backBufferConfig);
       if (backFlushEnd > 0) {
         tasks.push({ type: 'remove', start: 0, end: backFlushEnd });
       }
@@ -292,12 +331,16 @@ export function createSegmentLoaderActor(
 
     // Case 3: Segments
     if (range) {
-      const EPSILON = 0.0001;
-      const segmentsToLoad = getSegmentsToLoad(track.segments, bufferedSegments, currentTime).filter((seg) => {
+      const segmentsToLoad = getSegmentsToLoad(
+        track.segments,
+        bufferedSegments,
+        currentTime,
+        forwardBufferConfig
+      ).filter((seg) => {
         // Quality-aware filter: skip segments already covered by equal-or-higher-quality
         // content in the actor context. Preserves buffered high-quality content during
         // ABR downgrades; loads during upgrades and for uncovered positions.
-        const existing = actorCtx.segments.find((s) => Math.abs(s.startTime - seg.startTime) < EPSILON);
+        const existing = actorCtx.segments.find((s) => Math.abs(s.startTime - seg.startTime) < SEGMENT_TIME_EPSILON);
         // Partial segments are still streaming — treat as not buffered so they
         // are always re-planned (avoids relying on incomplete data).
         if (existing?.partial) return true;

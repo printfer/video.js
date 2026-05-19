@@ -22,7 +22,7 @@ export function createSimpleHlsEngine(
 ): Composition<SimpleHlsEngineState, SimpleHlsEngineContext> {
   return createComposition(
     [
-      syncPreloadAttribute,
+      syncPreload,
       trackPlaybackInitiated,
       resolvePresentation,
 
@@ -41,7 +41,7 @@ export function createSimpleHlsEngine(
 
       // MSE setup
       setupMediaSource,
-      updateDuration,
+      updateMediaSourceDuration,
       setupSourceBuffers,
 
       // Playback tracking
@@ -58,7 +58,7 @@ export function createSimpleHlsEngine(
       // Text tracks
       syncTextTracks,
       setupTextTrackActors,
-      loadTextTrackCues,
+      loadTextTrackSegments,
 
       // Hands writable signal refs to the consumer's onSignalsReady callback
       // so external code (the adapter, or any direct consumer) can drive the
@@ -113,7 +113,7 @@ export interface SimpleHlsEngineContext {
   videoBufferActor?: SourceBufferActor;
   audioBufferActor?: SourceBufferActor;
   textTracksActor?: TextTracksActor;
-  segmentLoaderActor?: TextTrackSegmentLoaderActor;
+  textTrackSegmentLoaderActor?: TextTrackSegmentLoaderActor;
 }
 
 export interface SimpleHlsEngineConfig extends ShareSignalsConfig<SimpleHlsEngineState, SimpleHlsEngineContext> {
@@ -142,12 +142,12 @@ Each behavior receives `{ state, context, config }` — but only the slots it de
 The first three entries are the lead-in:
 
 ```ts
-syncPreloadAttribute,
+syncPreload,
 trackPlaybackInitiated,
 resolvePresentation,
 ```
 
-**`syncPreloadAttribute`** mirrors the `<video preload>` attribute into `state.preload`. This makes the preload mode reactive — anything downstream that wants to react to preload changes (for example, "should we eagerly fetch the manifest?") can subscribe to a signal instead of polling the DOM.
+**`syncPreload`** bidirectionally syncs `state.preload` and the media element's `preload` property — DOM-side values feed state on attach or source change, and state-side values propagate back to the element. A configurable default (`'metadata'`) backfills when neither side has supplied a value. This makes the preload mode reactive — anything downstream that wants to react to preload changes (for example, "should we eagerly fetch the manifest?") can subscribe to a signal instead of polling the DOM.
 
 **`trackPlaybackInitiated`** sets `state.playbackInitiated` to `true` once the user has tried to play (the element is no longer paused). It's a small reactor that watches the media element's `play`/`pause` events. Why it matters: behaviors that should only run after the user interacts (or after autoplay fires) can gate on `state.playbackInitiated`.
 
@@ -256,7 +256,7 @@ The next three behaviors stand up the MSE pipeline:
 
 ```ts
 setupMediaSource,
-updateDuration,
+updateMediaSourceDuration,
 setupSourceBuffers,
 ```
 
@@ -266,7 +266,7 @@ This is where the engine first touches the media element directly. Up until now,
 
 The split between context and state is deliberate. The MediaSource itself is a resource — you call `addSourceBuffer()` on it, you set its `duration` — so it lives in context. Its readyState is data — a string that other behaviors gate decisions on — so it lives in state. The DOM events that drive readyState changes get bridged into the SPF signal graph by the small primitive in `media/dom/mse/`, keeping `setupMediaSource` clean.
 
-**`updateDuration`** waits for the resolved presentation duration (from stage 4) and a MediaSource that's open with idle source buffers, then writes `mediaSource.duration = presentation.duration`. The order matters: setting duration while a SourceBuffer has `updating === true` throws `InvalidStateError`, so the behavior waits for any in-flight appends to settle before writing.
+**`updateMediaSourceDuration`** waits for the resolved presentation duration (from stage 4) and a MediaSource that's open with idle source buffers, then writes `mediaSource.duration = presentation.duration`. The order matters: setting duration while a SourceBuffer has `updating === true` throws `InvalidStateError`, so the behavior waits for any in-flight appends to settle before writing.
 
 This is the first place the engine has real coordination concerns: timing among multiple resources. The behavior expresses it declaratively — `effect()` re-runs when any input signal changes, and the gate function checks every precondition. There's no manual sequencing, no callbacks-on-callbacks. Each precondition becomes a signal read; the framework figures out when to fire.
 
@@ -287,7 +287,7 @@ trackCurrentTime,
 switchQuality,
 ```
 
-**`trackCurrentTime`** mirrors the media element's `currentTime` onto `state.currentTime`. Same shape as `syncPreloadAttribute` from stage 1: the DOM event becomes a signal write, and downstream behaviors gate on the reactive value rather than polling the element. `loadSegments` reads it to know how far ahead to fetch; `endOfStream` reads it to know whether the user has reached the end.
+**`trackCurrentTime`** mirrors the media element's `currentTime` onto `state.currentTime`. Same shape as `syncPreload` from stage 1: the DOM event becomes a signal write, and downstream behaviors gate on the reactive value rather than polling the element. `loadSegments` reads it to know how far ahead to fetch; `endOfStream` reads it to know whether the user has reached the end.
 
 **`switchQuality`** is the ABR loop. It watches `state.bandwidthState` (a running estimate, written by `loadVideoSegments` after each successful segment fetch) and `state.selectedVideoTrackId`. When the estimate moves enough to justify a switch, it writes a different `selectedVideoTrackId`. That triggers `resolveVideoTrack` → `setupSourceBuffers` (if mime/codec changes) → `loadVideoSegments` to start fetching from the new variant.
 
@@ -365,7 +365,7 @@ The behavior also handles the seek-back case: if `appendBuffer` re-opens an `'en
 ```ts
 syncTextTracks,
 setupTextTrackActors,
-loadTextTrackCues,
+loadTextTrackSegments,
 ```
 
 Text tracks are an interesting wrinkle. They don't go through MSE — VTT cues land directly on the `<track>` elements of the media element. The shape of this stage is therefore different from the MSE pipeline above: there are no source buffers, no append serialization, no end-of-stream gate. But the SPF patterns are the same.
@@ -376,9 +376,9 @@ Text tracks are an interesting wrinkle. They don't go through MSE — VTT cues l
 
 The cue parser (`resolveTextTrackSegment`) is supplied via engine config — it defaults to the DOM-bound `resolveVttSegment` resolver, which uses an offscreen `<track>` element to leverage the browser's VTT parser. A different engine could supply a different parser (a worker-based parser, a native VTT parser if one ever ships, etc.) without changing the behavior.
 
-**`loadTextTrackCues`** is the orchestrator. It watches the resolved text track and the actors, and dispatches `load` messages to the segment loader actor whenever new segments need fetching. The actor handles per-segment fetching (and abort on track switch); the orchestrator decides *when* to ask.
+**`loadTextTrackSegments`** is the orchestrator. It watches the resolved text track and the actors, and dispatches `load` messages to the segment loader actor whenever new segments need fetching. The actor handles per-segment fetching (and abort on track switch); the orchestrator decides *when* to ask.
 
-This is the same pattern as MSE: actor-as-resource (`setupTextTrackActors` puts it on context), orchestrator-as-behavior (`loadTextTrackCues` decides when to send messages). Different platform, same shape.
+This is the same pattern as MSE: actor-as-resource (`setupTextTrackActors` puts it on context), orchestrator-as-behavior (`loadTextTrackSegments` decides when to send messages). Different platform, same shape.
 
 ---
 

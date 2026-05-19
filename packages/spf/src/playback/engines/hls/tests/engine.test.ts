@@ -30,15 +30,17 @@ describe('createSimpleHlsEngine', () => {
     engine.destroy();
   });
 
-  it('initializes state with seeded bandwidthState and undefined elsewhere', () => {
+  it('initializes state with seeded bandwidthState and behavior-supplied defaults', () => {
     const engine = createSimpleHlsEngine();
 
-    // Composition creates one signal per declared key. The engine seeds
-    // `bandwidthState` to an empty BandwidthState via `initialState` so
-    // ABR machinery has a non-nullish starting point; everything else
-    // starts as `undefined` and behaviors write their own slots.
+    // Composition creates one signal per declared key. ABR machinery is
+    // seeded via `initialState` with an empty BandwidthState. `preload` is
+    // backfilled by `syncPreload` to its default (`'metadata'`); `currentTime`
+    // is backfilled by `trackCurrentTime` to its default (`0`).
+    // Everything else starts as `undefined` and behaviors write their
+    // own slots in response to inputs.
     expect(snapshot(engine.state)).toEqual({
-      abrDisabled: undefined,
+      userVideoTrackSelection: undefined,
       bandwidthState: {
         fastEstimate: 0,
         fastTotalWeight: 0,
@@ -46,12 +48,10 @@ describe('createSimpleHlsEngine', () => {
         slowTotalWeight: 0,
         bytesSampled: 0,
       },
-      currentTime: undefined,
-      mediaSourceReadyState: undefined,
-      playbackInitiated: undefined,
-      preload: undefined,
+      currentTime: 0,
+      loadActivated: undefined,
+      preload: 'metadata',
       presentation: undefined,
-      presentationUrl: undefined,
       selectedAudioTrackId: undefined,
       selectedTextTrackId: undefined,
       selectedVideoTrackId: undefined,
@@ -258,13 +258,13 @@ http://example.com/audio-seg1.m4s
         expect(owners.mediaSource).toBeDefined();
         expect(owners.mediaSource?.readyState).toBe('open');
 
-        // 6. Video SourceBuffer should be created
-        expect(owners.videoBuffer).toBeDefined();
-        expect(owners.videoBuffer).toBeInstanceOf(SourceBuffer);
+        // 6. Video buffer cluster should be created (actor presence implies
+        //    `addSourceBuffer` ran; SourceBuffer itself is private to
+        //    `setupVideoBufferActors`).
+        expect(owners.videoBufferActor).toBeDefined();
 
-        // 7. Audio SourceBuffer should be created
-        expect(owners.audioBuffer).toBeDefined();
-        expect(owners.audioBuffer).toBeInstanceOf(SourceBuffer);
+        // 7. Audio buffer cluster should be created
+        expect(owners.audioBufferActor).toBeDefined();
       },
       { timeout: 5000 }
     );
@@ -317,11 +317,11 @@ http://example.com/video-seg1.m4s
 
         // Should create video track and buffer
         expect(state.selectedVideoTrackId).toBeDefined();
-        expect(owners.videoBuffer).toBeDefined();
+        expect(owners.videoBufferActor).toBeDefined();
 
         // Should NOT create audio track or buffer
         expect(state.selectedAudioTrackId).toBeUndefined();
-        expect(owners.audioBuffer).toBeUndefined();
+        expect(owners.audioBufferActor).toBeUndefined();
 
         // MediaSource should still be created
         expect(owners.mediaSource).toBeDefined();
@@ -379,11 +379,11 @@ http://example.com/audio-seg1.m4s
 
         // Should create audio track and buffer
         expect(state.selectedAudioTrackId).toBeDefined();
-        expect(owners.audioBuffer).toBeDefined();
+        expect(owners.audioBufferActor).toBeDefined();
 
         // Should NOT create video track or buffer
         expect(state.selectedVideoTrackId).toBeUndefined();
-        expect(owners.videoBuffer).toBeUndefined();
+        expect(owners.videoBufferActor).toBeUndefined();
 
         // MediaSource should still be created
         expect(owners.mediaSource).toBeDefined();
@@ -511,7 +511,7 @@ http://example.com/video-seg1.m4s
     // Should NOT create MediaSource or SourceBuffers without mediaElement
     expect(owners.mediaElement).toBeUndefined();
     expect(owners.mediaSource).toBeUndefined();
-    expect(owners.videoBuffer).toBeUndefined();
+    expect(owners.videoBufferActor).toBeUndefined();
 
     engine.destroy();
   });
@@ -591,8 +591,8 @@ http://example.com/audio-seg1.m4s
 
         expect(owners.mediaSource).toBeDefined();
         expect(owners.mediaSource?.readyState).toBe('open');
-        expect(owners.videoBuffer).toBeDefined();
-        expect(owners.audioBuffer).toBeDefined();
+        expect(owners.videoBufferActor).toBeDefined();
+        expect(owners.audioBufferActor).toBeDefined();
       },
       { timeout: 2000 }
     );
@@ -709,7 +709,7 @@ http://example.com/seg1.m4s
     });
     globalThis.fetch = mockFetch;
 
-    // Use a conservative initialBandwidth so switchQuality also selects 360p and
+    // Use a conservative initialBandwidth so switchVideoQuality also selects 360p and
     // doesn't immediately upgrade — verifying only the selected track is resolved.
     const engine = createSimpleHlsEngine({ initialBandwidth: 600_000 });
     const mediaElement = document.createElement('video');

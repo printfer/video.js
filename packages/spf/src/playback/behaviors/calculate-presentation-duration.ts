@@ -1,9 +1,36 @@
+/**
+ * **Populate presentation duration via a config-supplied resolver.**
+ *
+ * Once a presentation is in place and its `duration` is still undefined,
+ * calls `config.resolveDuration(state)` whenever a tracked slot changes. The
+ * resolver decides what counts as "duration is now derivable" for the variant
+ * in play; the behavior itself stays variant-agnostic:
+ *
+ * - **VoD** — derive from the first resolved selected track's `duration`
+ *   (video preferred, audio fallback). The HLS engine wires
+ *   `getResolvedSelectedTrackDuration` from `media/utils/track-selection.ts`
+ *   as the default. Audio-only falls out of the same resolver naturally
+ *   (no video selected → audio is the first resolved track).
+ * - **Live** — return `Number.POSITIVE_INFINITY` once the presentation is
+ *   established as live. This is the MSE-spec value for `mediaSource.duration`
+ *   under live playback; downstream `updateMediaSourceDuration` propagates it through.
+ *
+ * Validation: writes whatever the resolver returns as long as it's a positive
+ * number, including `Infinity`. `undefined` / `NaN` / `<= 0` are skipped.
+ *
+ * Fires at most once per presentation — an already-set `duration` is never
+ * overwritten, and the next reset arrives structurally when a new
+ * (unresolved) presentation replaces the current one. The resolver may
+ * return `undefined` while duration is still indeterminate; subsequent
+ * tracked-slot changes re-run the effect until the resolver commits a value.
+ *
+ * Downstream of `resolveVideoTrack` / `resolveAudioTrack`; upstream of
+ * `updateMediaSourceDuration` (which writes the value through to `mediaSource.duration`).
+ */
 import { defineBehavior } from '../../core/composition/create-composition';
 import { effect } from '../../core/signals/effect';
-import { type ReadonlySignal, type Signal, snapshot } from '../../core/signals/primitives';
-import type { AudioTrack, MaybeResolvedPresentation, VideoTrack } from '../../media/types';
-import { isResolvedTrack } from '../../media/types';
-import { getSelectedTrack } from '../../media/utils/track-selection';
+import { type ReadonlySignal, type Signal, snapshot, untrack, update } from '../../core/signals/primitives';
+import type { MaybeResolvedPresentation } from '../../media/types';
 
 export interface PresentationDurationState {
   presentation?: MaybeResolvedPresentation;
@@ -12,76 +39,39 @@ export interface PresentationDurationState {
 }
 
 /**
- * Check if we can calculate presentation duration (have required data).
+ * Resolver supplied via `config.resolveDuration`. Returns the duration to
+ * write to `presentation.duration`, or `undefined` when it isn't yet
+ * derivable. Positive `Infinity` is the canonical live value.
  */
-export function canCalculateDuration(state: PresentationDurationState): boolean {
-  if (!state.presentation) return false;
-  // Need at least one selected track
-  return !!(state.selectedVideoTrackId || state.selectedAudioTrackId);
+export type PresentationDurationResolver = (state: PresentationDurationState) => number | undefined;
+
+export interface PresentationDurationConfig {
+  resolveDuration: PresentationDurationResolver;
 }
 
-/**
- * Check if we should calculate presentation duration (conditions met).
- */
-export function shouldCalculateDuration(state: PresentationDurationState): boolean {
-  if (!canCalculateDuration(state)) return false;
-
-  const { presentation } = state;
-
-  // Don't recalculate if already set
-  if (presentation!.duration !== undefined) return false;
-
-  // Check if any selected track is resolved
-  const videoTrack = state.selectedVideoTrackId ? getSelectedTrack(state, 'video') : undefined;
-  const audioTrack = state.selectedAudioTrackId ? getSelectedTrack(state, 'audio') : undefined;
-
-  // At least one track must be resolved (has segments and duration)
-  return !!((videoTrack && isResolvedTrack(videoTrack)) || (audioTrack && isResolvedTrack(audioTrack)));
-}
-
-/**
- * Get duration from the first resolved track (prefer video, fallback to audio).
- */
-export function getDurationFromResolvedTracks(state: PresentationDurationState): number | undefined {
-  // Try video track first
-  const videoTrack = state.selectedVideoTrackId
-    ? (getSelectedTrack(state, 'video') as VideoTrack | undefined)
-    : undefined;
-  if (videoTrack && isResolvedTrack(videoTrack)) {
-    return videoTrack.duration;
-  }
-
-  // Fallback to audio track
-  const audioTrack = state.selectedAudioTrackId
-    ? (getSelectedTrack(state, 'audio') as AudioTrack | undefined)
-    : undefined;
-  if (audioTrack && isResolvedTrack(audioTrack)) {
-    return audioTrack.duration;
-  }
-
-  return undefined;
-}
-
-/**
- * Calculate and set presentation duration from resolved tracks.
- */
 function calculatePresentationDurationSetup({
   state,
+  config,
 }: {
   state: {
     presentation: Signal<PresentationDurationState['presentation']>;
     selectedVideoTrackId: ReadonlySignal<PresentationDurationState['selectedVideoTrackId']>;
     selectedAudioTrackId: ReadonlySignal<PresentationDurationState['selectedAudioTrackId']>;
   };
+  config: PresentationDurationConfig;
 }): () => void {
   return effect(() => {
-    const currentState = snapshot(state);
-    if (!shouldCalculateDuration(currentState)) return;
+    const presentation = state.presentation.get();
+    if (!presentation || presentation.duration !== undefined) return;
 
-    const duration = getDurationFromResolvedTracks(currentState);
-    if (duration === undefined || !Number.isFinite(duration)) return;
+    // presentation drives the effect; selection-only changes can't yield a
+    // writable duration on their own (resolver returns undefined until a
+    // track resolves, at which point resolve-track writes back through
+    // state.presentation anyway), so we read the rest untracked.
+    const duration = config.resolveDuration(untrack(() => snapshot(state)));
+    if (duration === undefined || Number.isNaN(duration) || duration <= 0) return;
 
-    state.presentation.set({ ...currentState.presentation!, duration });
+    update(state.presentation, (current) => (current ? { ...current, duration } : current));
   });
 }
 
