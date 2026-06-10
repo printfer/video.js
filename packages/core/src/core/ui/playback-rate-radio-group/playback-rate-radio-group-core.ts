@@ -6,51 +6,53 @@ import type { NonNullableObject } from '@videojs/utils/types';
 import type { MediaPlaybackRateState } from '../../media/state';
 import type { ButtonState } from '../types';
 
-export interface PlaybackRateMenuProps {
-  /** Custom label for the menu trigger. */
-  label?: string | ((state: PlaybackRateMenuState) => string) | undefined;
+export interface PlaybackRateRadioGroupProps {
+  /** Custom label for the options group. */
+  label?: string | ((state: PlaybackRateRadioGroupState) => string) | undefined;
   /** Custom formatter for visible playback rate labels. */
   formatRate?: ((rate: number) => string) | undefined;
   /** Whether playback rate selection is disabled. */
   disabled?: boolean | undefined;
 }
 
-export interface PlaybackRateMenuState extends ButtonState {
+export interface PlaybackRateRadioGroupState extends ButtonState {
   rate: number;
   rates: readonly number[];
   disabled: boolean;
+  availability: 'available' | 'unavailable';
 }
 
 function formatPlaybackRate(rate: number): string {
   return `${rate}×`;
 }
 
-export class PlaybackRateMenuCore {
-  static readonly defaultProps: NonNullableObject<PlaybackRateMenuProps> = {
+export class PlaybackRateRadioGroupCore {
+  static readonly defaultProps: NonNullableObject<PlaybackRateRadioGroupProps> = {
     label: '',
     formatRate: formatPlaybackRate,
     disabled: false,
   };
 
-  readonly state = createState<PlaybackRateMenuState>({
+  readonly state = createState<PlaybackRateRadioGroupState>({
     rate: 1,
     rates: [],
     disabled: false,
+    availability: 'unavailable',
     label: '',
   });
 
-  #props = { ...PlaybackRateMenuCore.defaultProps };
+  #props = { ...PlaybackRateRadioGroupCore.defaultProps };
   #media: MediaPlaybackRateState | null = null;
 
-  constructor(props?: PlaybackRateMenuProps) {
+  constructor(props?: PlaybackRateRadioGroupProps) {
     if (props) this.setProps(props);
   }
 
-  setProps(props: PlaybackRateMenuProps): void {
-    this.#props = defaults(props, PlaybackRateMenuCore.defaultProps);
+  setProps(props: PlaybackRateRadioGroupProps): void {
+    this.#props = defaults(props, PlaybackRateRadioGroupCore.defaultProps);
   }
 
-  getLabel(state: PlaybackRateMenuState): string {
+  getLabel(state: PlaybackRateRadioGroupState): string {
     const { label } = this.#props;
 
     if (isFunction(label)) {
@@ -71,7 +73,7 @@ export class PlaybackRateMenuCore {
     return String(rate);
   }
 
-  getAttrs(state: PlaybackRateMenuState) {
+  getAttrs(state: PlaybackRateRadioGroupState) {
     return {
       'aria-label': this.getLabel(state),
       'aria-disabled': state.disabled ? 'true' : undefined,
@@ -82,13 +84,17 @@ export class PlaybackRateMenuCore {
     this.#media = media;
   }
 
-  getState(): PlaybackRateMenuState {
+  getState(): PlaybackRateRadioGroupState {
     const media = this.#media!;
+
+    const availability: PlaybackRateRadioGroupState['availability'] =
+      media.playbackRates.length > 0 ? 'available' : 'unavailable';
 
     this.state.patch({
       rate: media.playbackRate,
       rates: media.playbackRates,
       disabled: this.#props.disabled || media.playbackRates.length === 0,
+      availability,
     });
     this.state.patch({ label: this.getLabel(this.state.current) });
 
@@ -110,7 +116,7 @@ export class PlaybackRateMenuCore {
   }
 }
 
-export namespace PlaybackRateMenuCore {
-  export type Props = PlaybackRateMenuProps;
-  export type State = PlaybackRateMenuState;
+export namespace PlaybackRateRadioGroupCore {
+  export type Props = PlaybackRateRadioGroupProps;
+  export type State = PlaybackRateRadioGroupState;
 }
