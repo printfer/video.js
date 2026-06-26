@@ -3,8 +3,8 @@ import cdnMedia from '@/content/cdn-media.json';
 import { rendererSupportsCdn } from '@/utils/installation/cdn-code';
 import type { InstallationOptions } from '@/utils/installation/codegen';
 import { detectRenderer } from '@/utils/installation/detect-renderer';
+import { buildOptions } from '@/utils/installation/renderer-options';
 import type { InstallMethod, Renderer, Skin, UseCase } from '@/utils/installation/types';
-import { VALID_RENDERERS } from '@/utils/installation/types';
 import type { Framework } from './config.js';
 
 const CDN_MEDIA_SUBPATHS = cdnMedia.map((entry) => entry.id);
@@ -32,17 +32,12 @@ const PRESET_OPTIONS: Array<{ value: UseCase; label: string }> = [
   { value: 'background-video', label: 'Background Video' },
 ];
 
+// Reuse the installation page's option builder so labels and ordering stay in
+// lockstep with the UI.
 function mediaOptionsForUseCase(useCase: UseCase): Array<{ value: Renderer; label: string }> {
-  const RENDERER_LABELS: Record<Renderer, string> = {
-    'background-video': 'Background Video',
-    hls: 'HLS',
-    'html5-audio': 'HTML5 Audio',
-    'html5-video': 'HTML5 Video',
-  };
-
-  return VALID_RENDERERS[useCase].map((r) => ({
-    value: r,
-    label: RENDERER_LABELS[r],
+  return buildOptions(useCase).map((option) => ({
+    value: option.value as Renderer,
+    label: option.label,
   }));
 }
 
