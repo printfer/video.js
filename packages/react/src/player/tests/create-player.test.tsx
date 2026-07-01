@@ -2,7 +2,7 @@ import { act, render, renderHook } from '@testing-library/react';
 import type { PlayerStore } from '@videojs/core/dom';
 import { defineSlice } from '@videojs/store';
 import type { ReactNode } from 'react';
-import { StrictMode } from 'react';
+import { StrictMode, useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { usePlayerContext } from '../context';
 import { createPlayer } from '../create-player';
@@ -187,6 +187,41 @@ describe('createPlayer', () => {
       );
 
       expect(container.querySelector('[data-testid="child"]')).toBeTruthy();
+    });
+
+    it('provides a stable context value across parent re-renders (fix for #1296)', () => {
+      const { Provider } = createPlayer({ features: [mockSlice] });
+
+      const receivedValues: unknown[] = [];
+
+      function ContextConsumer() {
+        const ctx = usePlayerContext();
+        receivedValues.push(ctx);
+        return null;
+      }
+
+      let forceParentRerender!: () => void;
+      function Parent() {
+        const [, setTick] = useState(0);
+        forceParentRerender = () => setTick((t) => t + 1);
+        return (
+          <Provider>
+            <ContextConsumer />
+          </Provider>
+        );
+      }
+
+      render(<Parent />);
+
+      const valueAfterMount = receivedValues[receivedValues.length - 1];
+
+      act(() => forceParentRerender());
+      act(() => forceParentRerender());
+      act(() => forceParentRerender());
+
+      const valueAfterRerenders = receivedValues[receivedValues.length - 1];
+
+      expect(valueAfterRerenders).toBe(valueAfterMount);
     });
   });
 

@@ -16,7 +16,7 @@ import type { InferStoreState } from '@videojs/store';
 import { combine, createStore } from '@videojs/store';
 import { useStore } from '@videojs/store/react';
 import type { FC, ReactNode } from 'react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { useDestroy } from '../utils/use-destroy';
 import { Container, PlayerContextProvider, useMedia, usePlayerContext } from './context';
@@ -91,11 +91,12 @@ export function createPlayer(config: CreatePlayerConfig<AnyPlayerFeature[]>): Cr
       return store.attach({ media, container });
     }, [media, container, store]);
 
-    return (
-      <PlayerContextProvider value={{ store, media, setMedia, container, setContainer, popupGroup }}>
-        {children}
-      </PlayerContextProvider>
+    const value = useMemo(
+      () => ({ store, media, setMedia, container, setContainer, popupGroup }),
+      [store, media, container, popupGroup]
     );
+
+    return <PlayerContextProvider value={value}>{children}</PlayerContextProvider>;
   }
 
   if (__DEV__ && config.displayName) {
