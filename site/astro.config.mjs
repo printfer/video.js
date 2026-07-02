@@ -2,7 +2,7 @@
 
 import process from 'node:process';
 
-import { unified } from '@astrojs/markdown-remark';
+import { satteri } from '@astrojs/markdown-satteri';
 import mdx from '@astrojs/mdx';
 import netlify from '@astrojs/netlify';
 import react from '@astrojs/react';
@@ -26,11 +26,11 @@ import yaml from 'shiki/langs/yaml.mjs';
 import svgr from 'vite-plugin-svgr';
 import llmsMarkdown from './integrations/llms-markdown';
 import { PRERELEASE_URL, PRODUCTION_URL } from './src/consts.ts';
-import rehypePrepareCodeBlocks from './src/utils/rehypePrepareCodeBlocks';
-import remarkConditionalHeadings from './src/utils/remarkConditionalHeadings';
-import { remarkReadingTime } from './src/utils/remarkReadingTime.mjs';
+import { satteriCodeFrame } from './src/utils/satteriCodeFrame';
+import { satteriConditionalHeadings } from './src/utils/satteriConditionalHeadings';
+import { satteriReadingTime } from './src/utils/satteriReadingTime';
 import { shikiNotationTransformers } from './src/utils/shikiNotationTransformers';
-import shikiTransformMetadata from './src/utils/shikiTransformMetadata';
+import { shikiStripPreStyle } from './src/utils/shikiStripPreStyle';
 
 // Netlify sets CONTEXT and BRANCH for each deploy. We use them to determine
 // the correct site URL:
@@ -144,15 +144,13 @@ export default defineConfig({
         ...http,
         ...astro,
       ],
-      transformers: [shikiTransformMetadata, ...shikiNotationTransformers],
+      transformers: [...shikiNotationTransformers, shikiStripPreStyle],
     },
-    // Astro 7 makes Sätteri the default Markdown processor, which does not run
-    // remark/rehype plugins. Stay on the unified() pipeline so our plugins keep
-    // working unchanged. unified() applies GFM + SmartyPants by default (which
-    // is why the previous explicit `gfm`/`smartypants` flags were dropped).
-    processor: unified({
-      remarkPlugins: [remarkConditionalHeadings, remarkReadingTime],
-      rehypePlugins: [rehypePrepareCodeBlocks],
+    // `syntaxHighlight`/`shikiConfig` are applied by Astro's Shiki layer
+    // independently of the Markdown processor, so highlighting is configured
+    // here while the processor's custom transforms live in `mdastPlugins`.
+    processor: satteri({
+      mdastPlugins: [satteriReadingTime(), satteriConditionalHeadings(), satteriCodeFrame()],
     }),
   },
 
