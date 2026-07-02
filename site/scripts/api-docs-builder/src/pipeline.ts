@@ -552,11 +552,17 @@ export interface PresetSkinDef {
   cssImport?: string;
 }
 
+export interface PresetFeatureRef {
+  name: string;
+  slug: string;
+  hasReference: boolean;
+}
+
 export interface PresetReference {
   name: string;
   description?: string;
   featureBundle: string;
-  features: string[];
+  features: PresetFeatureRef[];
   html: {
     skins: PresetSkinDef[];
     mediaElement?: string;
