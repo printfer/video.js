@@ -30,13 +30,14 @@ export interface TimeSliderState extends SliderState, Pick<MediaTimeState, 'curr
 export class TimeSliderCore extends SliderCore {
   static override readonly defaultProps: NonNullableObject<TimeSliderProps> = {
     ...SliderCore.defaultProps,
-    label: 'Seek',
+    label: '',
     changeThrottle: 100,
     pauseOnDrag: false,
   };
 
-  #props = { ...TimeSliderCore.defaultProps };
+  #props: TimeSliderProps = { ...TimeSliderCore.defaultProps };
   #media: (MediaTimeState & MediaBufferState) | null = null;
+  #formatLocale: string | string[] | undefined;
   #wasPlayingBeforeDrag = false;
 
   constructor(props?: TimeSliderProps) {
@@ -51,6 +52,11 @@ export class TimeSliderCore extends SliderCore {
 
   setMedia(media: MediaTimeState & MediaBufferState): void {
     this.#media = media;
+  }
+
+  /** @internal Platform adapters set the active i18n locale for `aria-valuetext` time formatting. */
+  setFormatLocale(locale: string | string[] | undefined): void {
+    this.#formatLocale = locale;
   }
 
   getState(): TimeSliderState {
@@ -77,6 +83,31 @@ export class TimeSliderCore extends SliderCore {
 
   override getLabel(state: SliderState): string {
     return super.getLabel(state) || 'Seek';
+  }
+
+  #announceValue(state: TimeSliderState): number {
+    return state.dragging ? this.rawValueFromPercent(state.pointerPercent) : state.value;
+  }
+
+  #formatTimeAsPhrase(seconds: number): string {
+    return this.#formatLocale === undefined
+      ? formatTimeAsPhrase(seconds)
+      : formatTimeAsPhrase(seconds, { locale: this.#formatLocale });
+  }
+
+  getValueText(state: TimeSliderState): string {
+    return Number.isFinite(state.duration) ? '{current} of {duration}' : this.getValueTextParams(state).current;
+  }
+
+  getValueTextParams(state: TimeSliderState): { current: string; duration: string } | { current: string } {
+    const current = this.#formatTimeAsPhrase(this.#announceValue(state));
+    if (!Number.isFinite(state.duration)) {
+      return { current };
+    }
+    return {
+      current,
+      duration: this.#formatTimeAsPhrase(state.duration),
+    };
   }
 
   /**
@@ -107,17 +138,12 @@ export class TimeSliderCore extends SliderCore {
 
   override getAttrs(state: TimeSliderState) {
     const base = super.getAttrs(state);
-
-    // During drag, announce the pointer position the user would seek to.
-    const announceValue = state.dragging ? this.rawValueFromPercent(state.pointerPercent) : state.value;
-    const currentPhrase = formatTimeAsPhrase(announceValue);
-    const durationPhrase = formatTimeAsPhrase(state.duration);
-    const valuetext = durationPhrase ? `${currentPhrase} of ${durationPhrase}` : currentPhrase;
+    const announceValue = this.#announceValue(state);
 
     return {
       ...base,
       'aria-valuenow': announceValue,
-      'aria-valuetext': valuetext,
+      'aria-valuetext': this.getValueText(state),
     };
   }
 }

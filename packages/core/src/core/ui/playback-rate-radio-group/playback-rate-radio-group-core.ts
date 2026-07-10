@@ -1,10 +1,11 @@
 import { createState } from '@videojs/store';
 import { defaults } from '@videojs/utils/object';
-import { isFunction, isUndefined } from '@videojs/utils/predicate';
+import { isUndefined } from '@videojs/utils/predicate';
 import type { NonNullableObject } from '@videojs/utils/types';
 
 import type { MediaPlaybackRateState } from '../../media/state';
 import type { ButtonState } from '../types';
+import { resolveLabel } from '../utils/resolve-label';
 
 export interface PlaybackRateRadioGroupProps {
   /** Custom label for the options group. */
@@ -53,16 +54,14 @@ export class PlaybackRateRadioGroupCore {
   }
 
   getLabel(state: PlaybackRateRadioGroupState): string {
-    const { label } = this.#props;
+    const custom = resolveLabel(this.#props.label, state);
+    if (custom !== undefined) return custom;
+    return 'Playback rate {rate}';
+  }
 
-    if (isFunction(label)) {
-      const customLabel = label(state);
-      if (customLabel) return customLabel;
-    } else if (label) {
-      return label;
-    }
-
-    return `Playback rate ${state.rate}`;
+  getLabelParams(state: PlaybackRateRadioGroupState): { rate: number } | undefined {
+    if (resolveLabel(this.#props.label, state) !== undefined) return undefined;
+    return { rate: state.rate };
   }
 
   getRateLabel(rate: number): string {

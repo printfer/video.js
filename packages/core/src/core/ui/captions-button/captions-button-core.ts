@@ -1,11 +1,11 @@
 import { createState } from '@videojs/store';
 import { isCaptionOrSubtitleTrack } from '@videojs/utils/dom';
 import { defaults } from '@videojs/utils/object';
-import { isFunction } from '@videojs/utils/predicate';
 import type { NonNullableObject } from '@videojs/utils/types';
 
 import type { MediaTextTrackState } from '../../media/state';
 import type { ButtonState } from '../types';
+import { resolveLabel } from '../utils/resolve-label';
 
 export interface CaptionsButtonProps {
   /** Custom label for the button. */
@@ -45,14 +45,8 @@ export class CaptionsButtonCore {
   }
 
   getLabel(state: CaptionsButtonState): string {
-    const { label } = this.#props;
-
-    if (isFunction(label)) {
-      const customLabel = label(state);
-      if (customLabel) return customLabel;
-    } else if (label) {
-      return label;
-    }
+    const label = resolveLabel(this.#props.label, state);
+    if (label) return label;
 
     return state.subtitlesShowing ? 'Disable captions' : 'Enable captions';
   }

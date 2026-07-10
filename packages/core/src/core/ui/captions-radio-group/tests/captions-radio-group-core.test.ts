@@ -128,6 +128,23 @@ describe('CaptionsRadioGroupCore', () => {
       expect(core.getTrackLabel({ kind: 'captions', label: '', language: '', mode: 'disabled' })).toBe('Captions');
     });
 
+    it('adds default labels for unlabeled tracks', () => {
+      const core = new CaptionsRadioGroupCore();
+      const media = createMediaState({
+        textTrackList: [
+          { id: 'captions-en', kind: 'captions', label: '', language: '', mode: 'disabled' },
+          { id: 'subtitles-en', kind: 'subtitles', label: '', language: '', mode: 'disabled' },
+        ],
+      });
+
+      core.setMedia(media);
+
+      expect(core.getState().tracks).toEqual([
+        { value: 'captions-en', label: 'Captions' },
+        { value: 'subtitles-en', label: 'Subtitles' },
+      ]);
+    });
+
     it('uses a custom formatter', () => {
       const core = new CaptionsRadioGroupCore({
         formatTrack: (track) => `${track.language.toUpperCase()} subtitles`,
