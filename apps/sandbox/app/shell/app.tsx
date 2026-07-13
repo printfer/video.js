@@ -19,7 +19,7 @@ import { Preview } from './preview';
 function getPagePath(platform: Platform, preset: Preset): string {
   if (platform === 'cdn') return '/cdn/';
   if (preset === 'background-video') return `/${platform}-background-video/`;
-  if (preset === 'vimeo-video') return `/${platform}-vimeo-video/`;
+  if (preset === 'vimeo-video' || preset === 'youtube-video') return `/${platform}-${preset}/`;
   return `/${platform}-${preset}/`;
 }
 
@@ -58,6 +58,7 @@ export function App() {
   const [preload, setPreload] = useState<PreloadValue>(initial.preload);
   const [locale, setLocale] = useState<SandboxLocaleTag>(initial.locale);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const isHostedVideo = preset === 'vimeo-video' || preset === 'youtube-video';
 
   const pagePath = getPagePath(platform, preset);
 
@@ -127,12 +128,12 @@ export function App() {
     }
   }, [preset, source]);
 
-  // CDN, background video, and vimeo video do not have a Tailwind skin variant.
+  // CDN, background video, and hosted video providers do not have a Tailwind skin variant.
   useEffect(() => {
-    if ((platform === 'cdn' || preset === 'background-video' || preset === 'vimeo-video') && styling === 'tailwind') {
+    if ((platform === 'cdn' || preset === 'background-video' || isHostedVideo) && styling === 'tailwind') {
       setStyling('css');
     }
-  }, [platform, preset, styling]);
+  }, [platform, isHostedVideo, preset, styling]);
 
   const availableSources =
     preset === 'audio' ? MP4_SOURCE_IDS : preset === 'dash-video' ? DASH_SOURCE_IDS : NON_DASH_SOURCE_IDS;
@@ -167,7 +168,7 @@ export function App() {
         isSimpleHls={preset.startsWith('simple-hls-')}
         isMuxVideo={preset === 'mux-video'}
         isMuxAudio={preset === 'mux-audio'}
-        isVimeoVideo={preset === 'vimeo-video'}
+        isHostedVideo={isHostedVideo}
         platforms={PLATFORMS}
         stylings={STYLINGS}
         presets={PRESETS}
