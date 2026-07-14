@@ -23,12 +23,13 @@ import type {
   CSSVarsExtraction,
   DataAttrDef,
   DataAttrsExtraction,
+  ExtraDataAttrsSource,
   PartReference,
   PartSource,
   PropDef,
   StateDef,
 } from './types.js';
-import { kebabToPascal, partKebabFromSource, sortProps } from './utils.js';
+import { getJSDocTagValue, kebabToPascal, log, partKebabFromSource, sortProps } from './utils.js';
 
 // ─── Overrides ─────────────────────────────────────────────────────
 
@@ -105,6 +106,48 @@ export function buildCSSVars(cssVarsData: CSSVarsExtraction): Record<string, CSS
 
 // ─── Discovery ─────────────────────────────────────────────────────
 
+// Extra data-attrs files in a component dir ({kebab}-{x}-data-attrs.ts)
+// declare their target parts with a `@parts item, radio-item` JSDoc tag on
+// the exported const. They cover attrs a DOM layer applies to part elements
+// directly, which the per-part stateAttrMap heuristic can't see (e.g.
+// menu-item-data-attrs applied by create-menu).
+function dataAttrsComponentName(fileBasename: string): string {
+  return kebabToPascal(fileBasename.replace(/-data-attrs\.ts$/, ''));
+}
+
+function discoverExtraDataAttrs(componentDir: string, componentKebab: string): ExtraDataAttrsSource[] {
+  const extras: ExtraDataAttrsSource[] = [];
+  const mainFile = `${componentKebab}-data-attrs.ts`;
+
+  for (const file of fs.readdirSync(componentDir)) {
+    if (!file.endsWith('-data-attrs.ts') || file === mainFile) continue;
+
+    const filePath = path.join(componentDir, file);
+    const exportName = `${dataAttrsComponentName(file)}DataAttrs`;
+    const sourceFile = ts.createSourceFile(filePath, fs.readFileSync(filePath, 'utf-8'), ts.ScriptTarget.Latest, true);
+
+    let tagValue: string | undefined;
+    ts.forEachChild(sourceFile, (node) => {
+      if (!ts.isVariableStatement(node)) return;
+      const declaresExport = node.declarationList.declarations.some(
+        (decl) => ts.isIdentifier(decl.name) && decl.name.text === exportName
+      );
+      if (declaresExport) tagValue = getJSDocTagValue(node, 'parts');
+    });
+    if (!tagValue) continue;
+
+    const parts = tagValue
+      .split(',')
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (parts.length === 0) continue;
+
+    extras.push({ path: filePath, parts });
+  }
+
+  return extras;
+}
+
 export function discoverComponents(monorepoRoot: string): ComponentSource[] {
   const coreUiPath = path.join(monorepoRoot, 'packages/core/src/core/ui');
   const htmlUiPath = path.join(monorepoRoot, 'packages/html/src/ui');
@@ -142,6 +185,9 @@ export function discoverComponents(monorepoRoot: string): ComponentSource[] {
     const partsIndexFile = path.join(reactUiPath, dir.name, 'index.parts.ts');
     if (fs.existsSync(partsIndexFile)) source.partsIndexPath = partsIndexFile;
 
+    const extraDataAttrs = discoverExtraDataAttrs(componentDir, dir.name);
+    if (extraDataAttrs.length > 0) source.extraDataAttrs = extraDataAttrs;
+
     if (source.corePath) {
       components.push(source);
     }
@@ -154,7 +200,6 @@ export function discoverComponents(monorepoRoot: string): ComponentSource[] {
 
 export function createComponentProgram(sources: ComponentSource[], monorepoRoot: string): ts.Program {
   const htmlUiPath = path.join(monorepoRoot, 'packages/html/src/ui');
-  const coreUiPath = path.join(monorepoRoot, 'packages/core/src/core/ui');
   const files: string[] = [];
 
   for (const source of sources) {
@@ -163,6 +208,7 @@ export function createComponentProgram(sources: ComponentSource[], monorepoRoot:
     if (source.cssVarsPath) files.push(source.cssVarsPath);
     if (source.htmlPath) files.push(source.htmlPath);
     if (source.partsIndexPath) files.push(source.partsIndexPath);
+    if (source.extraDataAttrs) files.push(...source.extraDataAttrs.map((extra) => extra.path));
 
     if (source.partsIndexPath) {
       const htmlDir = path.join(htmlUiPath, source.kebab);
@@ -458,6 +504,25 @@ function buildMultiPartReference(
     }
   }
 
+  for (const extra of source.extraDataAttrs ?? []) {
+    const componentName = dataAttrsComponentName(path.basename(extra.path));
+    const extraData = extractDataAttrs(extra.path, program, componentName);
+    if (!extraData) {
+      log.warn(`No ${componentName}DataAttrs export found in ${extra.path}; skipping @parts merge`);
+      continue;
+    }
+
+    const extraAttrs = buildDataAttrs(extraData);
+    for (const partKebab of extra.parts) {
+      const partRef = partsRecord[partKebab];
+      if (!partRef) {
+        log.warn(`@parts in ${extra.path} references unknown part "${partKebab}" on ${source.name}`);
+        continue;
+      }
+      partRef.dataAttributes = { ...partRef.dataAttributes, ...extraAttrs };
+    }
+  }
+
   return {
     name: source.name,
     props: {},
@@ -479,6 +544,10 @@ export function buildComponentReference(
     if (parts.length > 1) {
       return buildMultiPartReference(source, program, parts);
     }
+  }
+
+  if (source.extraDataAttrs?.length) {
+    log.warn(`Ignoring @parts data-attrs in ${source.kebab}: ${source.name} is not a multi-part component`);
   }
 
   return buildSingleComponentReference(source, program);
